@@ -61,7 +61,8 @@ export function weekday(ds) {
   const [y, m, d] = ds.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
 }
-export const mondayOf = (ds) => addDays(ds, -((weekday(ds) + 6) % 7));
+/** The Sunday that starts ds's week (Tyler's weeks run Sunday to Saturday, so on Sunday he sees the week ahead). */
+export const weekStartOf = (ds) => addDays(ds, -weekday(ds));
 export const hourOf = (t = now()) => { const p = parts(t); return p.h + p.mi / 60; };
 
 /** morning 6:00-17:00, evening 17:00-22:00, night 22:00-6:00 */
@@ -164,7 +165,7 @@ export const loadAll = () => withRetry(loadAllOnce);
 async function loadAllOnce() {
   const today = localDate();
   const yest = addDays(today, -1);
-  const monday = mondayOf(today);
+  const weekStart = weekStartOf(today);
   const [goals, checks, goalDaily, vitals, activity, ranges, weather, snow, flags, schedule, recs, runs, pending] =
     await Promise.all([
       q(sb.from('goals').select('id,name,sort_order,off_days').eq('active', true).order('sort_order')),
@@ -179,7 +180,7 @@ async function loadAllOnce() {
         .gte('hour', new Date(dayStart(yest)).toISOString()).lt('hour', new Date(dayStart(addDays(today, 1))).toISOString()).order('hour')),
       q(sb.from('snow_reports').select('*').gte('date', addDays(today, -3)).lte('date', today).order('fetched_at', { ascending: false }).limit(40)),
       q(sb.from('day_flags').select('date,snow_dismissed').eq('date', today)),
-      q(sb.from('workout_schedule').select('*').gte('date', addDays(monday, -1)).lte('date', addDays(monday, 7)).order('date')),
+      q(sb.from('workout_schedule').select('*').gte('date', addDays(weekStart, -1)).lte('date', addDays(weekStart, 7)).order('date')),
       q(sb.from('recommendations').select('*').eq('date', today)),
       q(sb.from('job_runs').select('*')),
       q(sb.from('actions').select('id,type,date,status,requested_at').eq('status', 'pending')),
@@ -196,6 +197,34 @@ async function loadAllOnce() {
     workouts: Object.fromEntries(workouts.map((w) => [w.id, w])),
   };
 }
+
+// ---------------------------------------------------------------------------
+// History (the phone's detail pages load these only when opened)
+// ---------------------------------------------------------------------------
+/** One week (Sunday to Saturday) of scheduled workouts, with the workouts themselves. */
+export const loadWeek = (start) => withRetry(async () => {
+  const schedule = await q(sb.from('workout_schedule').select('*').gte('date', start).lte('date', addDays(start, 6)).order('date'));
+  const ids = new Set();
+  for (const s of schedule) for (const k of ['planned_workout_id', 'active_workout_id']) if (s[k]) ids.add(s[k]);
+  const workouts = ids.size ? await q(sb.from('workouts').select('id,name,kind,steps,est_minutes,variant_of').in('id', [...ids])) : [];
+  return { start, schedule, workouts: Object.fromEntries(workouts.map((w) => [w.id, w])) };
+});
+
+/** Goal checks from a date to today (the goal history page). */
+export const loadGoalChecks = (from) => withRetry(() =>
+  q(sb.from('goal_checks').select('goal_id,date,done').gte('date', from).order('date')));
+
+/** Which table each metric lives in. */
+export const METRIC_TABLE = {
+  sleep_score: 'daily_vitals', sleep_seconds: 'daily_vitals', hrv_overnight_ms: 'daily_vitals', training_readiness: 'daily_vitals',
+  resting_hr: 'daily_vitals', body_battery_wake: 'daily_vitals',
+  steps: 'activity_daily', intensity_min: 'activity_daily', active_kcal: 'activity_daily', stress_avg: 'activity_daily',
+};
+/** One metric's daily values from a date to today: [{date, value}]. */
+export const loadMetric = (key, from) => withRetry(async () => {
+  const rows = await q(sb.from(METRIC_TABLE[key]).select(`date,${key}`).gte('date', from).lte('date', localDate()).order('date'));
+  return rows.map((r) => ({ date: r.date, value: r[key] == null ? null : +r[key] }));
+});
 
 /** Calls onChange (debounced) whenever a table the screens show changes. */
 export function subscribe(onChange) {

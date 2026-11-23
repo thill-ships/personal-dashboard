@@ -72,23 +72,25 @@ function sparkSvg(m, h = 52) {
   </svg>`;
 }
 
+const CHEVRON = '<svg class="chev" width="8" height="13" viewBox="0 0 8 13" aria-hidden="true"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
 function metricRowHtml(m) {
-  return `<div class="metric">
+  return `<a class="metric" href="#health/${m.key}" aria-label="${esc(m.label)} history">
     <div class="metric-text">
       <div class="metric-label">${esc(m.label)}</div>
       <div class="metric-value${m.flagged ? ' flag' : ''}">${esc(m.text)}</div>
       <div class="metric-normal">${esc(m.normalText ?? m.normal)}</div>
-    </div>${sparkSvg(m)}</div>`;
+    </div>${sparkSvg(m)}${CHEVRON}</a>`;
 }
 
 const legendRow = (extra = '') =>
   `<div class="legend-row"><span>Last 14 days${extra}</span><span class="legend"><i></i>your normal</span></div>`;
 
 function weekStrip(d) {
-  const monday = K.mondayOf(d.today);
+  const start = K.weekStartOf(d.today);
   const cells = [];
   for (let i = 0; i < 7; i++) {
-    const ds = K.addDays(monday, i);
+    const ds = K.addDays(start, i);
     const s = d.schedule.find((r) => r.date === ds);
     const w = s && d.workouts[s.active_workout_id || s.planned_workout_id];
     let cls = '', status = '';
@@ -98,7 +100,7 @@ function weekStrip(d) {
     const name = s?.status === 'rest' ? 'Rest' : (w ? K.workoutShort(w.name) : '—');
     cells.push(`<div class="day ${cls}"><div class="day-name">${K.fmtDay(ds)}</div><div class="day-work">${esc(name)}</div><div class="day-status">${esc(status)}</div></div>`);
   }
-  return `<div><div class="week-title">This week</div><div class="week">${cells.join('')}</div></div>`;
+  return `<a class="week-link" href="#week" aria-label="Open this week's workouts"><div class="week-title">This week <span class="more">See every workout ${CHEVRON}</span></div><div class="week">${cells.join('')}</div></a>`;
 }
 
 function liftTable(planned, adjusted, call) {
@@ -134,7 +136,7 @@ function goalsCard(d, mode) {
       ${on ? ICON_CHECK() : ICON_OPEN}<span class="name">${esc(g.name)}</span>${side}</button>`;
   }).join('');
   return `<section class="card">
-    <div class="card-head"><div class="card-title">Goals</div><div class="card-note">${day === 'yest' ? 'Yesterday' : 'Today'} ${done} of ${total}</div></div>
+    <div class="card-head"><div class="card-title">Goals <span class="card-note">${day === 'yest' ? 'yesterday' : 'today'} ${done} of ${total}</span></div><a class="more" href="#goals">History ${CHEVRON}</a></div>
     ${seg('goals-day', [['yest', 'Yesterday'], ['today', 'Today']], day)}
     <div class="goals">${rows}</div></section>`;
 }
@@ -238,8 +240,8 @@ function recoveryCard(d) {
   const scoreNote = score.value == null ? '<div class="sub">No sleep score</div>'
     : `<div class="sub${score.flagged ? ' flag' : ''}">${score.flagged ? 'Below normal' : 'Within normal'}${score.lo != null ? ` (${K.num(score.lo)} to ${K.num(score.hi)})` : ''}</div>`;
   return `<section class="card" style="gap:14px"><div class="card-head"><div class="card-title">Recovery</div>${syncNote(d)}</div>
-    <div class="score"><div class="score-num${score.flagged ? ' flag' : ''}">${esc(score.text)}</div>
-      <div><div class="score-label">Sleep score</div>${scoreNote}</div></div>
+    <a class="score" href="#health/sleep_score" aria-label="Sleep score history"><div class="score-num${score.flagged ? ' flag' : ''}">${esc(score.text)}</div>
+      <div style="flex-grow:1"><div class="score-label">Sleep score</div>${scoreNote}</div>${CHEVRON}</a>
     ${stages}${legendRow()}${rows.map(metricRowHtml).join('')}</section>`;
 }
 
@@ -319,8 +321,237 @@ function progressCard(d) {
         <path d="${s.d}" fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
       </svg>`;
   }
-  return `<section class="card"><div class="card-title">Goal progress</div>${top}
+  return `<section class="card"><div class="card-head"><div class="card-title">Goal progress</div><a class="more" href="#goals">History ${CHEVRON}</a></div>${top}
     <div class="week-title" style="margin:4px 0 0;font-size:14px">Last 30 days</div>${bars}</section>`;
+}
+
+
+// ---------------------------------------------------------------------------
+// Detail pages: #week[/YYYY-MM-DD], #goals, #health/<metric>
+// ---------------------------------------------------------------------------
+const page = { period: 30, cache: new Map() };
+const PERIODS = [[7, '7D'], [30, '30D'], [90, '90D'], [365, '1Y']];
+
+function route() {
+  const [name, arg] = location.hash.replace(/^#\/?/, '').split('/');
+  if (name === 'week') return { page: 'week', arg: arg || null };
+  if (name === 'goals') return { page: 'goals' };
+  if (name === 'health' && K.METRICS[arg]) return { page: 'health', arg };
+  return { page: 'home' };
+}
+
+/** Loads once per key (kept until the next live update), then re-renders. */
+function cached(key, load) {
+  const hit = page.cache.get(key);
+  if (hit && !hit.stale) return hit;
+  // First load shows "Loading…"; after a live update the old data stays up while it refetches
+  const entry = { loading: true, value: hit?.value };
+  page.cache.set(key, entry);
+  load().then((value) => { page.cache.set(key, { value }); render(); })
+    .catch((err) => { page.cache.set(key, hit?.value ? { value: hit.value } : { error: K.friendlyError(err) }); render(); });
+  return entry;
+}
+
+function pageHead(title, sub = '') {
+  return `<header class="page-head"><a class="back" href="#">${BACK} Today</a>
+    <div class="page-title">${esc(title)}</div>${sub ? `<div class="head-sub">${sub}</div>` : ''}</header>`;
+}
+const BACK = '<svg width="9" height="15" viewBox="0 0 9 15" aria-hidden="true"><path d="M7.5 1.5l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const waiting = (c) => c.error ? `<section class="card"><div class="empty">${esc(c.error)}</div></section>` : '<section class="card"><div class="empty">Loading…</div></section>';
+const dayLong = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'long', month: 'short', day: 'numeric' });
+const dayShortFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' });
+const fmtDs = (ds, f = dayShortFmt) => f.format(new Date(ds + 'T12:00:00Z'));
+
+function renderPage(r) {
+  let html;
+  if (r.page === 'week') html = weekPage(r.arg || K.weekStartOf(data.today));
+  else if (r.page === 'goals') html = goalsPage();
+  else html = healthPage(r.arg);
+  app.innerHTML = html;
+}
+
+// --- Week -------------------------------------------------------------------
+const STATUS_LABEL = { done: 'Done', missed: 'Missed', sent: 'On your watch', swapped_in: 'Adjusted version on watch', planned: 'Planned', rest: 'Rest' };
+
+function weekPage(start) {
+  const end = K.addDays(start, 6);
+  const thisWeek = K.weekStartOf(data.today);
+  const label = start === thisWeek ? 'This week' : start === K.addDays(thisWeek, 7) ? 'Next week' : start === K.addDays(thisWeek, -7) ? 'Last week' : `Week of ${fmtDs(start)}`;
+  const nav = `<div class="week-nav">
+      <button type="button" class="icon-btn" data-action="week-prev" aria-label="Previous week">${BACK}</button>
+      <div class="week-range"><b>${esc(label)}</b><span>${esc(fmtDs(start))} to ${esc(fmtDs(end))}</span></div>
+      <button type="button" class="icon-btn flip" data-action="week-next" aria-label="Next week">${BACK}</button></div>`;
+  const c = cached(`week:${start}`, () => K.loadWeek(start));
+  if (!c.value) return pageHead('Workouts') + nav + waiting(c);
+  const { schedule, workouts } = c.value;
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const ds = K.addDays(start, i);
+    const s = schedule.find((x) => x.date === ds);
+    const w = s && workouts[s.active_workout_id || s.planned_workout_id];
+    const isToday = ds === data.today;
+    let status = s ? (STATUS_LABEL[s.status] || s.status) : '';
+    if (s && s.status === 'planned' && ds < data.today) status = 'Not logged';
+    let body;
+    if (!s) body = '<div class="empty">Nothing planned.</div>';
+    else if (s.status === 'rest') body = '<div class="empty">Rest day.</div>';
+    else {
+      const st = s.stats || {};
+      const stats = s.status === 'done' ? `<div class="tiles four" style="margin-top:4px">${[
+        ['Duration', st.duration_s ? `${Math.round(st.duration_s / 60)} min` : '—'], ['Avg HR', K.num(st.avg_hr)],
+        ['Calories', K.num(st.kcal)], ['Sets', st.sets_done != null ? `${st.sets_done} of ${st.sets_planned ?? '—'}` : '—']]
+        .map(([l, v]) => `<div class="tile"><div class="tile-label">${l}</div><div class="tile-value" style="font-size:18px">${esc(v)}</div></div>`).join('')}</div>` : '';
+      body = `${liftTable(w, null)}${stats}`;
+    }
+    days.push(`<section class="card day-card${isToday ? ' is-today' : ''}" id="day-${ds}">
+      <div class="card-head"><div><div class="next-label">${esc(fmtDs(ds, dayLong))}${isToday ? ' · Today' : ''}</div>
+        <div class="next-name">${esc(s?.status === 'rest' ? 'Rest' : w?.name ?? (s ? 'Workout' : '—'))}${w?.est_minutes ? `<span class="card-note"> · ${Math.round(w.est_minutes)} min</span>` : ''}</div></div>
+        ${status ? `<div class="badge status-${esc(s.status)}">${esc(status)}</div>` : ''}</div>${body}</section>`);
+  }
+  return pageHead('Workouts') + nav + days.join('');
+}
+
+// --- Goals ------------------------------------------------------------------
+function goalsPage() {
+  const n = page.period;
+  const from = K.addDays(data.today, -(n - 1));
+  const head = pageHead('Goal history') + seg('period', PERIODS, n);
+  const c = cached(`checks:${from}`, () => K.loadGoalChecks(from));
+  if (!c.value) return head + waiting(c);
+  const d = { ...data, checks: c.value };
+  const first = data.goalDaily[0]?.date;
+  if (!first) return head + '<section class="card"><div class="empty">History starts the first time you check off a goal.</div></section>';
+
+  // Index over the period
+  const series = K.goalIndexSeries(data).filter((p) => p.date >= K.addDays(from, -1));
+  let index = '';
+  if (series.length >= 2) {
+    const vals = series.map((p) => p.idx);
+    const change = vals[vals.length - 1] - vals[0];
+    index = `<section class="card"><div class="card-title">Goal index</div>
+      <div style="display:flex;align-items:baseline;gap:10px"><span style="font-size:40px;font-weight:700;line-height:1">${vals[vals.length - 1].toFixed(1)}</span>
+      <span class="${change >= 0 ? 'up' : 'down'}" style="font-size:15px">${K.signed(change)} in ${series.length - 1} days</span></div>
+      ${lineChart(vals, { dates: series.map((p) => p.date), area: true })}</section>`;
+  }
+
+  // Overall: share of expected goals done, per day
+  const days = [];
+  for (let ds = [from, first].sort()[1]; ds < data.today; ds = K.addDays(ds, 1)) days.push(ds);
+  let exp = 0, done = 0, perfect = 0;
+  for (const ds of days) {
+    const ct = K.goalCount(d, ds);
+    exp += ct.total; done += ct.done;
+    if (ct.total && ct.done === ct.total) perfect++;
+  }
+  const overall = `<section class="card"><div class="card-title">All goals</div>
+    <div class="tiles three">
+      <div class="tile"><div class="tile-label">Done</div><div class="tile-value">${exp ? Math.round((done / exp) * 100) + '%' : '—'}</div><div class="tile-side">of expected</div></div>
+      <div class="tile"><div class="tile-label">Perfect days</div><div class="tile-value">${perfect}</div><div class="tile-side">of ${days.length}</div></div>
+      <div class="tile"><div class="tile-label">Per day</div><div class="tile-value">${days.length ? (done / days.length).toFixed(1) : '—'}</div><div class="tile-side">goals done</div></div>
+    </div><div class="note" style="text-align:left">Finished days only; today counts once it's over.</div></section>`;
+
+  // Each goal: rate, current streak, a calendar of the period
+  const goals = data.goals.map((g) => {
+    let n2 = 0, dn = 0;
+    for (const ds of days) if (K.goalExpected(g, ds)) { n2++; if (K.goalDone(d, g.id, ds)) dn++; }
+    // Streak: expected days in a row done, counting back from today (today only once it's done)
+    const all = { checks: [...c.value, ...data.checks] };
+    const earliest = [first, [from, K.addDays(data.today, -31)].sort()[0]].sort()[1];
+    let streak = 0;
+    for (let ds = data.today; ds >= earliest; ds = K.addDays(ds, -1)) {
+      if (!K.goalExpected(g, ds)) continue;
+      if (K.goalDone(all, g.id, ds)) streak++;
+      else if (ds !== data.today) break;
+    }
+    const pct = n2 ? Math.round((dn / n2) * 100) : null;
+    return `<div class="goal-hist">
+      <div class="goal-hist-head"><b>${esc(g.name)}</b><span>${pct == null ? '—' : pct + '%'}${streak ? ` · ${streak}-day streak` : ''}</span></div>
+      ${goalCalendar(d, g, from, first)}</div>`;
+  }).join('');
+  const legend = `<div class="cal-legend"><span><i class="c-done"></i>Done</span><span><i class="c-miss"></i>Missed</span><span><i class="c-off"></i>Day off</span></div>`;
+  return head + index + overall + `<section class="card"><div class="card-head"><div class="card-title">Each goal</div></div>${legend}${goals}</section>`;
+}
+
+/** A goal's days in the period: a row of squares (30 days or fewer) or a week-by-week grid. */
+function goalCalendar(d, g, from, first) {
+  const cell = (ds) => {
+    if (ds > data.today) return '<i class="c-none"></i>';
+    if (ds < first) return '<i class="c-pre"></i>';
+    if (!K.goalExpected(g, ds)) return `<i class="c-off" title="${esc(fmtDs(ds))}: day off"></i>`;
+    const on = K.goalDone(d, g.id, ds);
+    if (ds === data.today && !on) return `<i class="c-today" title="Today"></i>`;
+    return `<i class="${on ? 'c-done' : 'c-miss'}" title="${esc(fmtDs(ds))}: ${on ? 'done' : 'missed'}"></i>`;
+  };
+  if (page.period <= 30) {
+    const cells = [];
+    for (let ds = from; ds <= data.today; ds = K.addDays(ds, 1)) cells.push(cell(ds));
+    return `<div class="cal-row" style="--n:${cells.length}">${cells.join('')}</div>`;
+  }
+  const cells = [];
+  for (let ds = K.weekStartOf(from); ds <= K.addDays(K.weekStartOf(data.today), 6); ds = K.addDays(ds, 1)) cells.push(ds < from ? '<i class="c-none"></i>' : cell(ds));
+  return `<div class="cal-grid" style="--cols:${Math.ceil(cells.length / 7)}">${cells.join('')}</div>`;
+}
+
+// --- Health -----------------------------------------------------------------
+function healthPage(key) {
+  const def = K.METRICS[key];
+  const n = page.period;
+  const from = K.addDays(data.today, -(n - 1));
+  const head = pageHead(def.label) + seg('period', PERIODS, n);
+  const c = cached(`metric:${key}:${from}`, () => K.loadMetric(key, from));
+  if (!c.value) return head + waiting(c);
+  const byDate = Object.fromEntries(c.value.map((r) => [r.date, r.value]));
+  const dates = [], vals = [];
+  for (let ds = from; ds <= data.today; ds = K.addDays(ds, 1)) { dates.push(ds); vals.push(byDate[ds] ?? null); }
+  const have = vals.filter((v) => v != null);
+  const r = data.ranges[key];
+  const lo = r ? +r.low : null, hi = r ? +r.high : null;
+  if (!have.length) return head + '<section class="card"><div class="empty">No data for this period yet.</div></section>';
+  const avg = have.reduce((a, b) => a + b, 0) / have.length;
+  const better = def.worse === 'high' ? Math.min : Math.max, worse = def.worse === 'high' ? Math.max : Math.min;
+  const latestI = vals.map((v, i) => (v != null ? i : -1)).filter((i) => i >= 0).pop();
+  const inNormal = r ? have.filter((v) => !((def.worse === 'low' && v < lo) || (def.worse === 'high' && v > hi))).length : null;
+  const flagged = (v) => r && ((def.worse === 'low' && v < lo) || (def.worse === 'high' && v > hi));
+  const tiles = [
+    ['Latest', def.fmt(vals[latestI]), fmtDs(dates[latestI])],
+    ['Average', def.fmt(avg), `${have.length} days`],
+    [def.worse === 'high' ? 'Lowest' : 'Best', def.fmt(better(...have)), ''],
+    [def.worse === 'high' ? 'Highest' : 'Lowest', def.fmt(worse(...have)), ''],
+  ];
+  const summary = `<section class="card">
+    <div class="tiles">${tiles.map(([l, v, side]) => `<div class="tile"><div class="tile-label">${l}</div><div class="tile-value" style="font-size:22px">${esc(v)}</div>${side ? `<div class="tile-side">${esc(side)}</div>` : ''}</div>`).join('')}</div>
+    ${r ? `<div class="sub">Your normal: ${esc(lo === hi ? def.fmt(lo) : `${def.fmt(lo)} to ${def.fmt(hi)}`)}. ${inNormal} of ${have.length} days were ${def.worse === 'high' ? 'at or below' : 'at or above'} it.</div>` : ''}
+    ${lineChart(vals, { dates, lo, hi, rolling: n > 30 })}
+    ${n > 30 ? '<div class="note" style="text-align:left">Thin line: each day. Thick line: 7-day average.</div>' : ''}</section>`;
+  const list = n <= 30 ? `<section class="card"><div class="card-title">Day by day</div><div class="day-list">${dates.map((ds, i) => [ds, vals[i]]).reverse().map(([ds, v]) =>
+    `<div><span>${esc(fmtDs(ds, dayLong))}</span><b class="${v != null && flagged(v) ? 'flag' : ''}">${v == null ? '—' : esc(def.fmt(v))}</b></div>`).join('')}</div></section>` : '';
+  return head + summary + list;
+}
+
+/** A full-width line chart with dates under it; optional normal band, shaded area or 7-day average. */
+function lineChart(vals, { dates, lo = null, hi = null, area = false, rolling = false } = {}) {
+  const W = 320, H = 150;
+  const s = K.spark(vals, { w: W, h: H, lo, hi, padX: 4, padY: 8 });
+  if (!s) return '';
+  const nums = vals.filter((v) => v != null);
+  let avgPath = '';
+  if (rolling) {
+    const avg = vals.map((_, i) => {
+      const win = vals.slice(Math.max(0, i - 6), i + 1).filter((v) => v != null);
+      return win.length >= 3 ? win.reduce((a, b) => a + b, 0) / win.length : null;
+    });
+    let pen = false;
+    avg.forEach((v, i) => { if (v == null) { pen = false; return; } avgPath += `${pen ? 'L' : 'M'}${s.X(i).toFixed(1)} ${s.Y(v).toFixed(1)} `; pen = true; });
+  }
+  const areaPath = area ? `<path d="${s.d} L${s.X(vals.length - 1).toFixed(1)} ${H} L${s.X(0).toFixed(1)} ${H} Z" fill="var(--accent-soft)"/>` : '';
+  const mid = dates[Math.floor(dates.length / 2)];
+  return `<div class="line-chart"><svg class="chart tall" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Chart from ${esc(fmtDs(dates[0]))} to ${esc(fmtDs(dates[dates.length - 1]))}, from ${esc(String(Math.round(Math.min(...nums))))} to ${esc(String(Math.round(Math.max(...nums))))}">
+      ${s.band ? `<rect x="0" y="${s.band.y.toFixed(1)}" width="${W}" height="${s.band.h.toFixed(1)}" fill="var(--band)"/>` : ''}
+      ${areaPath}
+      <path d="${s.d}" fill="none" stroke="${rolling ? '#9CA3AF' : 'var(--accent)'}" stroke-width="${rolling ? 1.5 : 2.5}" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+      ${avgPath ? `<path d="${avgPath.trim()}" fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>` : ''}
+    </svg></div>
+    <div class="chart-foot"><span>${esc(fmtDs(dates[0]))}</span><span>${esc(fmtDs(mid))}</span><span>${esc(fmtDs(dates[dates.length - 1]))}</span></div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +559,8 @@ function progressCard(d) {
 // ---------------------------------------------------------------------------
 function render() {
   if (!data) return;
+  const r = route();
+  if (r.page !== 'home') { renderPage(r); return; }
   const d = data;
   const mode = phoneMode();
   if (view.mode !== mode) { view.mode = mode; view.goalsDay = null; }
@@ -349,6 +582,12 @@ app.addEventListener('click', async (e) => {
   try {
     if (action === 'goals-day') { view.goalsDay = el.dataset.value; render(); return; }
     if (action === 'city') { view.city = el.dataset.value; render(); return; }
+    if (action === 'period') { page.period = +el.dataset.value; render(); return; }
+    if (action === 'week-prev' || action === 'week-next') {
+      const start = K.addDays(route().arg || K.weekStartOf(data.today), action === 'week-prev' ? -7 : 7);
+      location.hash = `#week/${start}`;
+      return;
+    }
     if (action === 'goal') {
       const id = +el.dataset.goal, date = el.dataset.date;
       const done = !K.goalDone(data, id, date);
@@ -376,6 +615,7 @@ async function reload() {
   loading = true;
   try {
     data = await K.loadAll();
+    for (const v of page.cache.values()) v.stale = true;
     if (refreshingSince && !data.pending.some((a) => a.type === 'refresh')) refreshingSince = 0;
     render();
   } catch (err) {
@@ -386,6 +626,8 @@ async function reload() {
     loading = false;
   }
 }
+
+addEventListener('hashchange', () => { scrollTo(0, 0); render(); });
 
 async function start() {
   if (!(await K.session())) await K.signInForm(app, { title: 'Dashboard' });

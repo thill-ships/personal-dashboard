@@ -55,10 +55,10 @@ function metricRowHtml(m) {
 }
 
 function weekStrip(d) {
-  const monday = K.mondayOf(d.today);
+  const start = K.weekStartOf(d.today);
   const cells = [];
   for (let i = 0; i < 7; i++) {
-    const ds = K.addDays(monday, i);
+    const ds = K.addDays(start, i);
     const s = d.schedule.find((r) => r.date === ds);
     const w = s && d.workouts[s.active_workout_id || s.planned_workout_id];
     let cls = '', status = '';
