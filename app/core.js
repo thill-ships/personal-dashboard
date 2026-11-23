@@ -354,6 +354,44 @@ export function stepPlan(s) {
 }
 export const liftSteps = (w) => (w?.steps || []).filter((s) => s.type !== 'cooldown');
 
+export const CALL_TEXT = { keep: 'keep the plan', push: 'push harder', ease: 'ease off' };
+
+/**
+ * Everything the morning workout card needs, shared by the wall and the phone:
+ * the schedule row, the planned and adjusted workouts, Claude's call as a title,
+ * text and style, whether to offer the adjusted version, and the status line.
+ */
+export function workoutToday(d) {
+  const s = d.schedule.find((r) => r.date === d.today) || null;
+  if (!s || s.status === 'rest') return { s };
+  const planned = d.workouts[s.planned_workout_id] || null;
+  const rec = d.rec;
+  const adjusted = rec?.adjusted_workout_id ? d.workouts[rec.adjusted_workout_id] : null;
+  let call;
+  if (!rec) {
+    call = hourOf() < 6.25
+      ? { title: "Claude's call comes at 6:15 AM", text: '', kind: '' }
+      : { title: 'No recommendation today', text: 'The plan as written stands.', kind: '' };
+  } else if (!rec.vitals_ready) {
+    call = { title: "Vitals haven't synced yet", text: `${hourOf() < 8.5 ? 'Claude checks again at 8:30 AM. ' : ''}The plan as written is on your watch.`, kind: '' };
+  } else {
+    call = { title: `Claude's call: ${CALL_TEXT[rec.call]}`, text: rec.reason || '', kind: rec.call };
+  }
+  const version = rec?.call === 'push' ? 'harder' : 'easier';
+  const offer = !!adjusted && rec?.call !== 'keep' && ['planned', 'sent'].includes(s.status);
+  const pending = d.pending.some((a) => ['accept_workout', 'keep_plan'].includes(a.type) && a.date === d.today);
+  const status = {
+    swapped_in: `The ${version} version is on your watch.`,
+    sent: 'The plan as written is on your watch.',
+    planned: 'Goes to your watch at 6:15 AM.',
+  }[s.status] || '';
+  return {
+    s, planned, adjusted, rec, call, version, offer, pending, status,
+    done: s.status === 'done',
+    showAdjusted: offer || s.status === 'swapped_in',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Charts (inline SVG paths)
 // ---------------------------------------------------------------------------

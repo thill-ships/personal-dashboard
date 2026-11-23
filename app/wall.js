@@ -207,8 +207,6 @@ function ratesHtml(d) {
 // ---------------------------------------------------------------------------
 // Workout
 // ---------------------------------------------------------------------------
-const CALL = { keep: 'keep the plan', push: 'push harder', ease: 'ease off' };
-
 function liftTable(planned, adjusted, call) {
   const steps = K.liftSteps(planned);
   if (!steps.length) return '';
@@ -228,40 +226,23 @@ function liftTable(planned, adjusted, call) {
 }
 
 function workoutMorning(d) {
-  const s = d.schedule.find((r) => r.date === d.today);
+  const W = K.workoutToday(d);
   const head = '<div class="card-title">Today\'s workout</div>';
-  if (!s) {
+  if (!W.s) {
     return `<section class="card tall">${head}<div class="big">No workout planned</div>
       <div class="empty">Plan the week with Claude and it will show up here.</div>${weekStrip(d)}</section>`;
   }
-  if (s.status === 'rest') return `<section class="card tall">${head}<div class="big">Rest day</div>${weekStrip(d)}</section>`;
-  const planned = d.workouts[s.planned_workout_id];
-  const rec = d.rec;
-  const adjusted = rec?.adjusted_workout_id ? d.workouts[rec.adjusted_workout_id] : null;
-  let call;
-  if (!rec) {
-    call = K.hourOf() < 6.25
-      ? '<div class="call"><div class="call-title">Claude\'s call comes at 6:15 AM</div></div>'
-      : '<div class="call"><div class="call-title">No recommendation today</div><div class="call-text">The plan as written stands.</div></div>';
-  } else if (!rec.vitals_ready) {
-    call = `<div class="call"><div class="call-title">Vitals haven't synced yet</div><div class="call-text">${K.hourOf() < 8.5 ? 'Claude checks again at 8:30 AM. ' : ''}The plan as written is on your watch.</div></div>`;
-  } else {
-    call = `<div class="call ${rec.call}"><div class="call-title">Claude's call: ${CALL[rec.call]}</div><div class="call-text">${esc(rec.reason || '')}</div></div>`;
-  }
-  const pending = d.pending.some((a) => ['accept_workout', 'keep_plan'].includes(a.type) && a.date === d.today);
-  let footer = '';
-  if (s.status === 'swapped_in') footer = `<div class="status-line">The ${rec?.call === 'push' ? 'harder' : 'easier'} version is on your watch.</div>`;
-  else if (s.status === 'done') footer = `<div class="logged">${ICON_CHECK('var(--green)', 22)} Done</div>`;
-  else if (s.status === 'sent') footer = '<div class="status-line">The plan as written is on your watch.</div>';
-  else if (s.status === 'planned') footer = '<div class="status-line">Goes to your watch at 6:15 AM.</div>';
-  const offer = adjusted && rec?.call !== 'keep' && ['planned', 'sent'].includes(s.status);
-  const buttons = !offer ? '' : pending
+  if (W.s.status === 'rest') return `<section class="card tall">${head}<div class="big">Rest day</div>${weekStrip(d)}</section>`;
+  const call = `<div class="call ${W.call.kind}"><div class="call-title">${esc(W.call.title)}</div>${W.call.text ? `<div class="call-text">${esc(W.call.text)}</div>` : ''}</div>`;
+  const footer = W.done ? `<div class="logged">${ICON_CHECK('var(--green)', 22)} Done</div>`
+    : W.status ? `<div class="status-line">${esc(W.status)}</div>` : '';
+  const buttons = !W.offer ? '' : W.pending
     ? '<div class="btn-row"><button type="button" class="btn primary" disabled>Sending to your watch…</button></div>'
-    : `<div class="btn-row"><button type="button" class="btn primary" data-action="accept">Send ${rec.call === 'push' ? 'harder' : 'easier'} version</button><button type="button" class="btn" data-action="keep">Keep the plan</button></div>`;
-  const mins = planned?.est_minutes ? `${Math.round(planned.est_minutes)} min planned` : '';
+    : `<div class="btn-row"><button type="button" class="btn primary" data-action="accept">Send ${W.version} version</button><button type="button" class="btn" data-action="keep">Keep the plan</button></div>`;
+  const mins = W.planned?.est_minutes ? `${Math.round(W.planned.est_minutes)} min planned` : '';
   return `<section class="card tall" style="gap:16px">${head}
-    <div class="card-head"><div style="font-size:36px;font-weight:700">${esc(planned?.name ?? 'Workout')}</div><div class="card-note" style="font-size:18px">${mins}</div></div>
-    ${call}${liftTable(planned, offer || s.status === 'swapped_in' ? adjusted : null, rec?.call)}${footer}${weekStrip(d)}${buttons}</section>`;
+    <div class="card-head"><div style="font-size:36px;font-weight:700">${esc(W.planned?.name ?? 'Workout')}</div><div class="card-note" style="font-size:18px">${mins}</div></div>
+    ${call}${liftTable(W.planned, W.showAdjusted ? W.adjusted : null, W.rec?.call)}${footer}${weekStrip(d)}${buttons}</section>`;
 }
 
 function workoutEvening(d) {
