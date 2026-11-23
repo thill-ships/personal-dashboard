@@ -436,6 +436,9 @@ async function start() {
     if (!document.activeElement || document.activeElement === document.body) render(); // tick the clock
   }, 20000);
   setInterval(reload, 10 * 60000);  // fallback if a live update is missed
+  // Switching back from the calendar or scores app: show current data right away
+  // (live updates may have been missed while the screen was in the background).
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) reload(); });
   setInterval(() => { if (wakeUntil && Date.now() > wakeUntil) { wakeUntil = 0; render(); } }, 2000);
 }
 
