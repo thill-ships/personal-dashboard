@@ -138,13 +138,36 @@ export function signInForm(el, { title = 'Dashboard' } = {}) {
 // ---------------------------------------------------------------------------
 const q = (p) => p.then(({ data, error }) => { if (error) throw error; return data; });
 
-export async function loadAll() {
+/** True for a dropped or failed connection (phone switching networks, waking up), not a real error. */
+export function isNetworkError(err) {
+  const m = String(err?.message || err || '');
+  return /Load failed|Failed to fetch|NetworkError|network connection was lost|fetch failed|timed out/i.test(m);
+}
+/** Plain-English message for a failed load or save. */
+export function friendlyError(err) {
+  return isNetworkError(err) ? "Couldn't reach the internet. Check your connection; it will try again."
+    : String(err?.message || err);
+}
+/** Runs fn, trying again twice (after 1 s and 3 s) if the connection drops. */
+export async function withRetry(fn) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt >= 2 || !isNetworkError(err)) throw err;
+      await new Promise((r) => setTimeout(r, attempt ? 3000 : 1000));
+    }
+  }
+}
+
+export const loadAll = () => withRetry(loadAllOnce);
+async function loadAllOnce() {
   const today = localDate();
   const yest = addDays(today, -1);
   const monday = mondayOf(today);
   const [goals, checks, goalDaily, vitals, activity, ranges, weather, snow, flags, schedule, recs, runs, pending] =
     await Promise.all([
-      q(sb.from('goals').select('id,name,sort_order').eq('active', true).order('sort_order')),
+      q(sb.from('goals').select('id,name,sort_order,off_days').eq('active', true).order('sort_order')),
       q(sb.from('goal_checks').select('goal_id,date,done').gte('date', addDays(today, -31)).lte('date', today)),
       q(sb.from('goal_daily').select('date,done_count,total').lte('date', today).order('date')),
       q(sb.from('daily_vitals').select('date,sleep_score,sleep_seconds,deep_seconds,light_seconds,rem_seconds,awake_seconds,sleep_end_local,hrv_overnight_ms,training_readiness,resting_hr,body_battery_wake,watch_last_sync,updated_at')
@@ -193,16 +216,16 @@ export function subscribe(onChange) {
 const check = ({ error }) => { if (error) throw error; };
 
 export async function setGoal(goalId, date, done, source) {
-  check(await sb.from('goal_checks').upsert(
+  await withRetry(async () => check(await sb.from('goal_checks').upsert(
     { goal_id: goalId, date, done, checked_at: new Date().toISOString(), source },
-    { onConflict: 'goal_id,date' }));
+    { onConflict: 'goal_id,date' })));
 }
 export async function requestAction(type) {
-  check(await sb.from('actions').insert({ type, date: localDate() }));
+  await withRetry(async () => check(await sb.from('actions').insert({ type, date: localDate() })));
 }
 export async function setSnowDismissed(value) {
-  check(await sb.from('day_flags').upsert(
-    { date: localDate(), snow_dismissed: value, updated_at: new Date().toISOString() }, { onConflict: 'date' }));
+  await withRetry(async () => check(await sb.from('day_flags').upsert(
+    { date: localDate(), snow_dismissed: value, updated_at: new Date().toISOString() }, { onConflict: 'date' })));
 }
 
 // ---------------------------------------------------------------------------
@@ -228,14 +251,31 @@ export function goalIndexSeries(d) {
   return out;
 }
 
-/** Share of days each goal was done over the last `days` finished days (since tracking began). */
+const DAY_NAMES = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+/** Whether a goal is expected on a date (goals can have days of the week off). */
+export function goalExpected(g, date) {
+  return !(g.off_days || []).includes(weekday(date));
+}
+/** "Off Sundays" for a goal that's off on that date's day of the week, else ''. */
+export const goalOffLabel = (g, date) => (goalExpected(g, date) ? '' : `Off ${DAY_NAMES[weekday(date)]}`);
+/** The goals expected on a date, and how many of them are done. */
+export function goalCount(d, date) {
+  const expected = d.goals.filter((g) => goalExpected(g, date));
+  return { done: expected.filter((g) => goalDone(d, g.id, date)).length, total: expected.length };
+}
+
+/** Share of expected days each goal was done over the last `days` finished days (since tracking began). */
 export function goalRates(d, days = 30) {
   const first = d.goalDaily[0]?.date;
   if (!first) return d.goals.map((g) => ({ ...g, rate: null }));
   const from = [addDays(d.today, -days), first].sort()[1];
-  const n = Math.max(0, Math.round((dayStart(d.today) - dayStart(from)) / 86400000));
   return d.goals.map((g) => {
-    const done = d.checks.filter((c) => c.goal_id === g.id && c.done && c.date >= from && c.date < d.today).length;
+    let n = 0, done = 0;
+    for (let ds = from; ds < d.today; ds = addDays(ds, 1)) {
+      if (!goalExpected(g, ds)) continue;
+      n++;
+      if (goalDone(d, g.id, ds)) done++;
+    }
     return { ...g, rate: n ? done / n : null };
   });
 }
@@ -354,7 +394,23 @@ export function stepPlan(s) {
 }
 export const liftSteps = (w) => (w?.steps || []).filter((s) => s.type !== 'cooldown');
 
-export const CALL_TEXT = { keep: 'keep the plan', push: 'push harder', ease: 'ease off' };
+/**
+ * How fresh the data is: when the Mac's last refresh finished (any part that
+ * worked) and which parts failed on their latest try, in plain words.
+ */
+const PART_NAMES = { garmin: 'Garmin', workout: 'workout status', weather: 'weather', snow: 'Sundance' };
+export function dataStatus(d) {
+  const runs = d.runs.filter((r) => r.job === 'refresh');
+  const okTimes = runs.filter((r) => r.ok && r.finished_at).map((r) => Date.parse(r.finished_at));
+  const failed = runs.filter((r) => r.ok === false && PART_NAMES[r.part]).map((r) => PART_NAMES[r.part]);
+  return { updatedAt: okTimes.length ? Math.max(...okTimes) : null, failed };
+}
+export function watchSync(d) {
+  const s = [...d.vitals].reverse().find((v) => v.watch_last_sync)?.watch_last_sync;
+  return s ? Date.parse(s) : null;
+}
+
+export const CALL_TEXT ={ keep: 'keep the plan', push: 'push harder', ease: 'ease off' };
 
 /**
  * Everything the morning workout card needs, shared by the wall and the phone:

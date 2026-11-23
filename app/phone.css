@@ -19,9 +19,12 @@ svg { display: block; }
   display: flex; flex-direction: column; gap: 16px; }
 
 /* Header */
-.head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; padding: 4px 4px 0; }
+.head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 4px 4px 0; }
+.refresh-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 0 4px; margin-top: -8px; }
+.refresh-btn { height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border: 2px solid #D1D5DB; border-radius: 12px; background: #fff; font-size: 15px; font-weight: 600; flex-shrink: 0; }
+.refresh-btn.busy svg { animation: spin 1s linear infinite; }
 .head-date { font-size: 24px; font-weight: 700; line-height: 1.15; white-space: nowrap; }
-.head-sub { font-size: 14px; color: var(--muted); margin-top: 2px; }
+.head-sub { font-size: 14px; color: var(--muted); }
 .head-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .pill { font-size: 14px; font-weight: 600; padding: 6px 12px; border-radius: 999px; background: var(--band); color: var(--accent-ink); white-space: nowrap; }
 .pill.evening { background: var(--dark); color: #fff; }
@@ -55,6 +58,8 @@ svg { display: block; }
 .goal.done { background: var(--accent-soft); }
 .goal span.name { flex-grow: 1; }
 .goal .log { font-size: 14px; font-weight: 600; color: var(--accent); }
+.goal.off:not(.done) { background: transparent; border: 1px dashed var(--line); color: var(--muted); }
+.goal .off-label { font-size: 13px; color: var(--muted); }
 .goals { display: flex; flex-direction: column; gap: 6px; }
 
 /* Tiles */

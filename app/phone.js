@@ -36,17 +36,24 @@ function phoneMode() {
 // Pieces
 // ---------------------------------------------------------------------------
 function header(d, mode) {
-  const sync = [...d.vitals].reverse().find((v) => v.watch_last_sync)?.watch_last_sync;
   const busy = refreshingSince && Date.now() - refreshingSince < 120000;
+  const st = K.dataStatus(d);
+  const status = busy ? 'Refreshing…'
+    : `${st.updatedAt ? `Updated ${esc(K.fmtTime(st.updatedAt))}` : 'Not updated yet'}${st.failed.length ? ` · <span class="flag">${esc(st.failed.join(' and '))} didn't update</span>` : ''}`;
   return `<header class="head">
-    <div><div class="head-date">${esc(shortDate.format(new Date(K.now())))}</div>
-      <div class="head-sub">${sync ? `Synced ${esc(K.fmtTime(Date.parse(sync)))}` : 'Watch not synced yet'}${busy ? ' · refreshing…' : ''}</div></div>
+    <div class="head-date">${esc(shortDate.format(new Date(K.now())))}</div>
     <div class="head-right">
       ${K.testTime ? '<div class="pill test">Test</div>' : ''}
       <div class="pill ${mode}">${mode === 'morning' ? 'Morning' : 'Evening'}</div>
-      <button type="button" class="icon-btn${busy ? ' busy' : ''}" data-action="refresh" aria-label="Refresh data"${busy ? ' disabled' : ''}>${ICON_REFRESH}</button>
-    </div></header>`;
+    </div></header>
+    <div class="refresh-row"><div class="head-sub">${status}</div>
+      <button type="button" class="refresh-btn${busy ? ' busy' : ''}" data-action="refresh"${busy ? ' disabled' : ''}>${ICON_REFRESH}${busy ? 'Refreshing' : 'Refresh'}</button></div>`;
 }
+
+const syncNote = (d) => {
+  const t = K.watchSync(d);
+  return `<div class="card-note">${t ? `Watch synced ${esc(K.fmtTime(t))}` : 'Watch not synced'}</div>`;
+};
 
 function seg(action, options, current) {
   return `<div class="seg" role="group">${options.map(([value, label]) =>
@@ -118,14 +125,16 @@ function liftTable(planned, adjusted, call) {
 function goalsCard(d, mode) {
   const day = view.goalsDay ?? (mode === 'morning' ? 'yest' : 'today');
   const date = day === 'yest' ? d.yest : d.today;
-  const done = d.goals.filter((g) => K.goalDone(d, g.id, date)).length;
+  const { done, total } = K.goalCount(d, date);
   const rows = d.goals.map((g) => {
     const on = K.goalDone(d, g.id, date);
-    return `<button type="button" class="goal${on ? ' done' : ''}" data-action="goal" data-goal="${g.id}" data-date="${date}" aria-pressed="${on}">
-      ${on ? ICON_CHECK() : ICON_OPEN}<span class="name">${esc(g.name)}</span>${!on && day === 'yest' ? '<span class="log">Log it</span>' : ''}</button>`;
+    const off = K.goalOffLabel(g, date);
+    const side = off ? `<span class="off-label">${esc(off)}</span>` : !on && day === 'yest' ? '<span class="log">Log it</span>' : '';
+    return `<button type="button" class="goal${on ? ' done' : ''}${off ? ' off' : ''}" data-action="goal" data-goal="${g.id}" data-date="${date}" aria-pressed="${on}">
+      ${on ? ICON_CHECK() : ICON_OPEN}<span class="name">${esc(g.name)}</span>${side}</button>`;
   }).join('');
   return `<section class="card">
-    <div class="card-head"><div class="card-title">Goals</div><div class="card-note">${day === 'yest' ? 'Yesterday' : 'Today'} ${done} of ${d.goals.length}</div></div>
+    <div class="card-head"><div class="card-title">Goals</div><div class="card-note">${day === 'yest' ? 'Yesterday' : 'Today'} ${done} of ${total}</div></div>
     ${seg('goals-day', [['yest', 'Yesterday'], ['today', 'Today']], day)}
     <div class="goals">${rows}</div></section>`;
 }
@@ -217,7 +226,7 @@ function recoveryCard(d) {
   const rows = ['sleep_seconds', 'hrv_overnight_ms', 'training_readiness', 'resting_hr', 'body_battery_wake'].map((k) => K.metricRow(d, k, d.vitals));
   const v = d.vitals.find((x) => x.date === d.today);
   if (score.value == null && rows.every((r) => r.value == null)) {
-    return `<section class="card"><div class="card-title">Recovery</div>
+    return `<section class="card"><div class="card-head"><div class="card-title">Recovery</div>${syncNote(d)}</div>
       <div class="call"><div class="call-title">Last night's sleep hasn't synced yet</div><div class="call-text">Open Garmin Connect on your phone to sync the watch, then tap refresh.</div></div>
       ${legendRow()}${[score, ...rows].map(metricRowHtml).join('')}</section>`;
   }
@@ -228,7 +237,7 @@ function recoveryCard(d) {
       <div class="stages-key">${STAGES.map(([k, n, c]) => `<span><i style="background:${c}"></i>${n} ${esc(K.hm(+v[k] || 0))}</span>`).join('')}</div></div>` : '';
   const scoreNote = score.value == null ? '<div class="sub">No sleep score</div>'
     : `<div class="sub${score.flagged ? ' flag' : ''}">${score.flagged ? 'Below normal' : 'Within normal'}${score.lo != null ? ` (${K.num(score.lo)} to ${K.num(score.hi)})` : ''}</div>`;
-  return `<section class="card" style="gap:14px"><div class="card-title">Recovery</div>
+  return `<section class="card" style="gap:14px"><div class="card-head"><div class="card-title">Recovery</div>${syncNote(d)}</div>
     <div class="score"><div class="score-num${score.flagged ? ' flag' : ''}">${esc(score.text)}</div>
       <div><div class="score-label">Sleep score</div>${scoreNote}</div></div>
     ${stages}${legendRow()}${rows.map(metricRowHtml).join('')}</section>`;
@@ -238,10 +247,9 @@ function activityCard(d) {
   const rows = ['steps', 'intensity_min', 'active_kcal', 'stress_avg'].map((k) => K.metricRow(d, k, d.activity));
   const todayAct = d.activity.find((a) => a.date === d.today);
   if (todayAct?.intensity_min_week != null) rows[1].normalText = `${K.num(todayAct.intensity_min_week)} this week, goal ${K.num(todayAct.intensity_goal_week ?? 150)}`;
-  const updated = todayAct?.updated_at ? ` · updated ${K.fmtTime(Date.parse(todayAct.updated_at))}` : '';
   const bed = K.bedtime(d);
-  return `<section class="card" style="gap:14px"><div class="card-title">Activity</div>
-    ${legendRow(esc(updated))}${rows.map(metricRowHtml).join('')}
+  return `<section class="card" style="gap:14px"><div class="card-head"><div class="card-title">Activity</div>${syncNote(d)}</div>
+    ${legendRow()}${rows.map(metricRowHtml).join('')}
     <div class="bed"><div class="bed-head">Tonight</div><div class="bed-time">Bed by ${esc(bed.time)}</div><div class="bed-why">${esc(bed.why)}</div></div></section>`;
 }
 
@@ -331,7 +339,6 @@ function render() {
   if (mode === 'morning') cards.push(workoutMorning(d), recoveryCard(d), weatherCard(d), progressCard(d));
   else cards.push(workoutEvening(d), activityCard(d), weatherCard(d), progressCard(d));
   if (inSeason && !snowDay) cards.push(snowCard(snow));
-  cards.push(`<div class="stale">Updated ${esc(K.fmtTime(d.loadedAt))}</div>`);
   app.innerHTML = cards.join('');
 }
 
@@ -358,7 +365,7 @@ app.addEventListener('click', async (e) => {
     }
   } catch (err) {
     console.error(err);
-    toast(`Couldn't save that: ${err.message || err}`);
+    toast(`Couldn't save that. ${K.friendlyError(err)}`);
     await reload();
   }
 });
@@ -373,8 +380,8 @@ async function reload() {
     render();
   } catch (err) {
     console.error(err);
-    if (data) toast(`Couldn't load new data: ${err.message || err}`);
-    else app.innerHTML = `<div class="login"><h1>Couldn't load the dashboard</h1><p class="login-error">${esc(err.message || err)}</p></div>`;
+    if (data) toast(`Couldn't load new data. ${K.friendlyError(err)}`);
+    else app.innerHTML = `<div class="login"><h1>Couldn't load the dashboard</h1><p class="login-error">${esc(K.friendlyError(err))}</p></div>`;
   } finally {
     loading = false;
   }

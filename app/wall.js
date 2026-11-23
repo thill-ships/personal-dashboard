@@ -76,13 +76,14 @@ function weekStrip(d) {
 // ---------------------------------------------------------------------------
 function topBar(d, mode, { weatherLine = null } = {}) {
   const t = K.now();
-  const sync = [...d.vitals].reverse().find((v) => v.watch_last_sync)?.watch_last_sync;
   const right = [];
   if (weatherLine) right.push(`<div class="top-weather">${weatherLine}</div>`);
-  else if (sync) right.push(`<div class="sync">Watch synced ${esc(K.fmtTime(Date.parse(sync)))}</div>`);
   if (K.testTime) right.push('<div class="pill test">Test time</div>');
   right.push(`<div class="pill ${mode}">${mode === 'morning' ? 'Morning' : 'Evening'}</div>`);
   const busy = refreshingSince && Date.now() - refreshingSince < 120000;
+  // When the Mac last pulled fresh data, right beside the button that asks for more
+  const st = K.dataStatus(d);
+  right.push(`<div class="sync">${`${st.updatedAt ? `Updated ${esc(K.fmtTime(st.updatedAt))}` : 'Not updated yet'}${st.failed.length ? ` · <span style="color:var(--orange)">${esc(st.failed.join(' and '))} didn't update</span>` : ''}`}</div>`);
   right.push(`<button type="button" class="icon-btn${busy ? ' busy' : ''}" data-action="refresh" aria-label="Refresh data"${busy ? ' disabled' : ''}>${ICON_REFRESH}${busy ? 'Refreshing' : 'Refresh'}</button>`);
   return `<header class="top">
     <div class="top-left"><div class="date">${esc(K.fmtDate(t))}</div><div class="time">${esc(K.fmtTime(t))}</div></div>
@@ -163,7 +164,7 @@ function snowCard(snow) {
 // Goals
 // ---------------------------------------------------------------------------
 function goalsCard(d, date, title) {
-  const done = d.goals.filter((g) => K.goalDone(d, g.id, date)).length;
+  const { done, total } = K.goalCount(d, date);
   const isYesterday = date !== d.today;
   const series = K.goalIndexSeries(d);
   const last = series[series.length - 1];
@@ -171,11 +172,13 @@ function goalsCard(d, date, title) {
     ? `<span class="muted" style="font-size:16px">index ${last.idx.toFixed(1)}</span><span class="${last.delta >= 0 ? 'up' : 'down'}" style="font-size:16px">${K.signed(last.delta)}</span>` : '';
   const buttons = d.goals.map((g) => {
     const on = K.goalDone(d, g.id, date);
-    return `<button type="button" class="goal${on ? ' done' : ''}" data-action="goal" data-goal="${g.id}" data-date="${date}" aria-pressed="${on}">
-      ${on ? ICON_CHECK() : ICON_OPEN}<span>${esc(g.name)}</span>${!on && isYesterday ? '<span class="log">Log it</span>' : ''}</button>`;
+    const off = K.goalOffLabel(g, date);
+    const side = off ? `<span class="log off-label">${esc(off)}</span>` : !on && isYesterday ? '<span class="log">Log it</span>' : '';
+    return `<button type="button" class="goal${on ? ' done' : ''}${off ? ' off' : ''}" data-action="goal" data-goal="${g.id}" data-date="${date}" aria-pressed="${on}">
+      ${on ? ICON_CHECK() : ICON_OPEN}<span>${esc(g.name)}</span>${side}</button>`;
   }).join('');
   return `<section class="card">
-    <div class="card-head"><div class="card-title">${title}</div><div class="goal-sum"><b>${done} of ${d.goals.length}</b>${idx}</div></div>
+    <div class="card-head"><div class="card-title">${title}</div><div class="goal-sum"><b>${done} of ${total}</b>${idx}</div></div>
     <div class="goal-grid">${buttons}</div></section>`;
 }
 
@@ -279,13 +282,18 @@ function workoutEvening(d) {
 // ---------------------------------------------------------------------------
 // Recovery (morning) and activity (evening)
 // ---------------------------------------------------------------------------
+const watchNote = (d) => {
+  const t = K.watchSync(d);
+  return t ? ` · watch synced ${esc(K.fmtTime(t))}` : ' · watch not synced';
+};
+
 function recoveryCard(d) {
   const rows = ['sleep_score', 'sleep_seconds', 'hrv_overnight_ms', 'training_readiness', 'resting_hr', 'body_battery_wake']
     .map((k) => K.metricRow(d, k, d.vitals));
   const noToday = rows.every((r) => r.value == null);
   return `<section class="card tall" style="gap:10px">
     <div class="card-head" style="margin-bottom:4px"><div class="card-title">Recovery · last 14 days</div>
-      <div class="legend"><i></i>your normal</div></div>
+      <div class="legend"><i></i>your normal${watchNote(d)}</div></div>
     ${noToday ? '<div class="call"><div class="call-title" style="font-size:18px">Last night\'s sleep hasn\'t synced yet</div></div>' : ''}
     ${rows.map(metricRowHtml).join('')}</section>`;
 }
@@ -294,10 +302,9 @@ function activityCard(d) {
   const rows = ['steps', 'intensity_min', 'active_kcal', 'stress_avg'].map((k) => K.metricRow(d, k, d.activity));
   const todayAct = d.activity.find((a) => a.date === d.today);
   if (todayAct?.intensity_min_week != null) rows[1].normalText = `${K.num(todayAct.intensity_min_week)} this week, goal ${K.num(todayAct.intensity_goal_week ?? 150)}`;
-  const updated = todayAct?.updated_at ? ` · updated ${K.fmtTime(Date.parse(todayAct.updated_at))}` : '';
   const bed = K.bedtime(d);
   return `<section class="card tall" style="gap:10px">
-    <div class="card-head" style="margin-bottom:4px"><div class="card-title">Activity · last 14 days</div><div class="legend"><i></i>your normal${esc(updated)}</div></div>
+    <div class="card-head" style="margin-bottom:4px"><div class="card-title">Activity · last 14 days</div><div class="legend"><i></i>your normal${watchNote(d)}</div></div>
     ${rows.map(metricRowHtml).join('')}
     <div class="bed"><div class="bed-head"><span>Tonight</span><span>Screen goes dark at 10:00</span></div>
       <div class="bed-time">Bed by ${esc(bed.time)}</div><div class="bed-why">${esc(bed.why)}</div></div></section>`;
@@ -379,7 +386,7 @@ stage.addEventListener('click', async (e) => {
     }
   } catch (err) {
     console.error(err);
-    toast(`Couldn't save that: ${err.message || err}`);
+    toast(`Couldn't save that. ${K.friendlyError(err)}`);
     await reload();
   }
 });
@@ -397,8 +404,8 @@ async function reload() {
     render();
   } catch (err) {
     console.error(err);
-    if (data) toast(`Couldn't load new data: ${err.message || err}`);
-    else stage.innerHTML = `<div class="login"><h1>Couldn't load the dashboard</h1><p class="login-error">${esc(err.message || err)}</p></div>`;
+    if (data) toast(`Couldn't load new data. ${K.friendlyError(err)}`);
+    else stage.innerHTML = `<div class="login"><h1>Couldn't load the dashboard</h1><p class="login-error">${esc(K.friendlyError(err))}</p></div>`;
   } finally {
     loading = false;
   }

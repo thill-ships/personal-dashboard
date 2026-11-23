@@ -74,6 +74,8 @@ svg { display: block; }
   background: #fff; font-size: 20px; font-weight: 500; text-align: left; }
 .goal.done { background: var(--accent-soft); border-color: var(--accent-soft); }
 .goal .log { margin-left: auto; font-size: 15px; color: var(--accent-ink); font-weight: 600; }
+.goal.off:not(.done) { background: transparent; border-style: dashed; color: var(--muted); }
+.goal .log.off-label { color: var(--muted); font-weight: 500; }
 .goal-sum { display: flex; align-items: baseline; gap: 12px; }
 .goal-sum b { font-size: 26px; }
 .rates { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; text-align: center; }
