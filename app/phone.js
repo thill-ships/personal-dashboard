@@ -80,7 +80,7 @@ function metricRowHtml(m) {
       <div class="metric-label">${esc(m.label)}</div>
       <div class="metric-value${m.flagged ? ' flag' : ''}">${esc(m.text)}</div>
       <div class="metric-normal">${esc(m.normalText ?? m.normal)}</div>
-    </div>${sparkSvg(m)}${CHEVRON}</a>`;
+    </div>${sparkSvg(m)}</a>`;
 }
 
 const legendRow = (extra = '') =>
@@ -241,7 +241,7 @@ function recoveryCard(d) {
     : `<div class="sub${score.flagged ? ' flag' : ''}">${score.flagged ? 'Below normal' : 'Within normal'}${score.lo != null ? ` (${K.num(score.lo)} to ${K.num(score.hi)})` : ''}</div>`;
   return `<section class="card" style="gap:14px"><div class="card-head"><div class="card-title">Recovery</div>${syncNote(d)}</div>
     <a class="score" href="#health/sleep_score" aria-label="Sleep score history"><div class="score-num${score.flagged ? ' flag' : ''}">${esc(score.text)}</div>
-      <div style="flex-grow:1"><div class="score-label">Sleep score</div>${scoreNote}</div>${CHEVRON}</a>
+      <div style="flex-grow:1"><div class="score-label">Sleep score</div>${scoreNote}</div></a>
     ${stages}${legendRow()}${rows.map(metricRowHtml).join('')}</section>`;
 }
 
